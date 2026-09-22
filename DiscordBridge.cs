@@ -100,7 +100,7 @@ namespace iTunesRichPresence_Rewrite {
             }
         }
 
-        private static void UnhookITunesEvents(iTunesApp iTunes) {
+        private void UnhookITunesEvents(iTunesApp iTunes) {
             try {
                 iTunes.OnAboutToPromptUserToQuitEvent -= ITunes_OnAboutToPromptUserToQuitEvent;
                 iTunes.OnQuittingEvent -= ITunes_OnQuittingEvent;
