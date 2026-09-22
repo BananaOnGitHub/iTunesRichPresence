@@ -23,7 +23,8 @@ namespace iTunesRichPresence_Rewrite {
         private int _currentPosition;
 
         private readonly DispatcherTimer _timer;
-        public IiTunes ITunes;
+        private DateTime _resumeITunesConnectionAt;
+        public iTunesApp ITunes;
 
         /// <summary>
         /// Initializes the bridge and connects it to DiscordRPC
@@ -35,7 +36,7 @@ namespace iTunesRichPresence_Rewrite {
 
             tokens = AppDomain.CurrentDomain.GetAssemblies().SelectMany(s => s.GetTypes()).Where(p => typeof(IToken).IsAssignableFrom(p) && p.IsClass).Select(Activator.CreateInstance).Select(i => (IToken) i).ToList();
 
-            ITunes = new iTunesApp();
+            ConnectITunes();
 
             _timer = new DispatcherTimer {Interval = TimeSpan.FromSeconds(15)};
             _timer.Tick += Timer_OnTick;
@@ -46,6 +47,67 @@ namespace iTunesRichPresence_Rewrite {
             _currentState = ITPlayerState.ITPlayerStateStopped;
             _currentPosition = 0;
 
+        }
+
+        private void ConnectITunes() {
+            if (ITunes != null) {
+                return;
+            }
+
+            var iTunes = new iTunesApp();
+            try {
+                iTunes.OnAboutToPromptUserToQuitEvent += ITunes_OnAboutToPromptUserToQuitEvent;
+                iTunes.OnQuittingEvent += ITunes_OnQuittingEvent;
+                ITunes = iTunes;
+            }
+            catch {
+                UnhookITunesEvents(iTunes);
+                Marshal.FinalReleaseComObject(iTunes);
+                throw;
+            }
+        }
+
+        private void ITunes_OnAboutToPromptUserToQuitEvent() {
+            DisconnectForITunesShutdown();
+        }
+
+        private void ITunes_OnQuittingEvent() {
+            DisconnectForITunesShutdown();
+        }
+
+        private void DisconnectForITunesShutdown() {
+            // iTunes sends these events before the scripting-interface warning. Do not
+            // reconnect while the same instance is still winding down.
+            _resumeITunesConnectionAt = DateTime.UtcNow.AddSeconds(30);
+            DisconnectITunes();
+        }
+
+        private void DisconnectITunes() {
+            var iTunes = ITunes;
+            ITunes = null;
+
+            if (iTunes == null) {
+                return;
+            }
+
+            UnhookITunesEvents(iTunes);
+
+            try {
+                Marshal.FinalReleaseComObject(iTunes);
+            }
+            catch (COMException) {
+                // iTunes may already have torn down the COM connection while quitting.
+            }
+        }
+
+        private static void UnhookITunesEvents(iTunesApp iTunes) {
+            try {
+                iTunes.OnAboutToPromptUserToQuitEvent -= ITunes_OnAboutToPromptUserToQuitEvent;
+                iTunes.OnQuittingEvent -= ITunes_OnQuittingEvent;
+            }
+            catch (COMException) {
+                // Unadvise can fail after iTunes has begun shutting down.
+            }
         }
 
         /// <summary>
@@ -90,8 +152,8 @@ namespace iTunesRichPresence_Rewrite {
         /// <param name="e">Args of this event</param>
         private void Timer_OnTick(object sender, EventArgs e) {
             try {
-                if (ITunes == null) {
-                    ITunes = new iTunesApp();
+                if (ITunes == null && DateTime.UtcNow >= _resumeITunesConnectionAt) {
+                    ConnectITunes();
                 }
 
                 if (ITunes.CurrentTrack == null || (Settings.Default.ClearOnPause && ITunes.PlayerState != ITPlayerState.ITPlayerStatePlaying)) {
@@ -100,7 +162,7 @@ namespace iTunesRichPresence_Rewrite {
                 }
             }
             catch (COMException) {
-                ITunes = null;
+                DisconnectITunes();
                 var newPresence = new DiscordRpc.RichPresence {
                     largeImageKey = "itunes_logo_big",
                     details = "Error connecting to iTunes",
@@ -164,6 +226,7 @@ namespace iTunesRichPresence_Rewrite {
         /// </summary>
         public void Shutdown() {
             _timer.Stop();
+            DisconnectITunes();
             DiscordRpc.Shutdown();
         }
     }
